@@ -23,7 +23,7 @@ jobs:
           OWNER="${GITHUB_REPOSITORY%/*}"
           REPO="${GITHUB_REPOSITORY#*/}"
           CONFIG_FILE=".github/config/repo-settings.json"
-          DEFAULTS_REPO="robinmordasiewicz/f5xc-docs-template"
+          DEFAULTS_REPO="robinmordasiewicz/f5xc-template"
           DEFAULTS_PATH=".github/config/default-repo-settings.json"
 
           # ─── Phase 1: Validate ─────────────────────────────────────────────
