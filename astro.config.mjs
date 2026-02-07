@@ -36,7 +36,7 @@ export default defineConfig({
       sidebar: [
         {
           label: process.env.SIDEBAR_LABEL || 'Guide',
-          autogenerate: { directory: 'guide' },
+          autogenerate: { directory: '/' },
         },
       ],
     }),
