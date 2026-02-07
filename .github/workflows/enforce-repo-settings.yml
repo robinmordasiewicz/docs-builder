@@ -1,0 +1,390 @@
+name: Enforce Repository Settings
+
+on:
+  workflow_call:
+    secrets:
+      repo-admin-token:
+        description: 'PAT with admin permissions for repository settings'
+        required: true
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout calling repo
+        uses: actions/checkout@v5
+
+      - name: Enforce repository settings
+        env:
+          GH_TOKEN: ${{ secrets.repo-admin-token }}
+        run: |
+          set -euo pipefail
+
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          CONFIG_FILE=".github/config/repo-settings.json"
+
+          # ─── Universal defaults ───────────────────────────────────────────
+          DEFAULTS=$(cat <<'DEFAULTS_EOF'
+          {
+            "repository": {
+              "private": false,
+              "has_issues": true,
+              "has_projects": false,
+              "has_wiki": false,
+              "is_template": false,
+              "allow_squash_merge": true,
+              "allow_merge_commit": true,
+              "allow_rebase_merge": true,
+              "allow_auto_merge": true,
+              "delete_branch_on_merge": true,
+              "web_commit_signoff_required": false,
+              "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
+              "squash_merge_commit_message": "COMMIT_MESSAGES",
+              "merge_commit_title": "MERGE_MESSAGE",
+              "merge_commit_message": "PR_TITLE",
+              "allow_update_branch": true
+            },
+            "actions_permissions": {
+              "default_workflow_permissions": "write",
+              "can_approve_pull_request_reviews": true
+            },
+            "branch_protection": [{
+              "branch": "main",
+              "enforce_admins": true,
+              "required_status_checks": {
+                "strict": false,
+                "contexts": ["Check linked issues"]
+              },
+              "required_pull_request_reviews": {
+                "required_approving_review_count": 0,
+                "dismiss_stale_reviews": false,
+                "require_code_owner_reviews": false,
+                "require_last_push_approval": false
+              },
+              "restrictions": null,
+              "required_linear_history": false,
+              "allow_force_pushes": false,
+              "allow_deletions": false,
+              "block_creations": false,
+              "required_conversation_resolution": false,
+              "lock_branch": false,
+              "allow_fork_syncing": false
+            }],
+            "topics": [],
+            "pages": { "enabled": true }
+          }
+          DEFAULTS_EOF
+          )
+
+          # ─── Phase 1: Validate ─────────────────────────────────────────────
+          echo "=== Phase 1: Validate ==="
+
+          if ! command -v jq &>/dev/null; then
+            echo "[ERROR] jq is not installed" >&2; exit 1
+          fi
+          if ! command -v gh &>/dev/null; then
+            echo "[ERROR] gh CLI is not installed" >&2; exit 1
+          fi
+          if ! gh auth status &>/dev/null; then
+            echo "[ERROR] gh is not authenticated" >&2; exit 1
+          fi
+
+          # Deep-merge defaults with per-repo overrides
+          if [ -f "$CONFIG_FILE" ]; then
+            if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
+              echo "[ERROR] Config file is not valid JSON: $CONFIG_FILE" >&2; exit 1
+            fi
+            CONFIG=$(echo "$DEFAULTS" | jq -s '.[0] * .[1]' - "$CONFIG_FILE")
+            echo "[OK] Merged defaults with per-repo overrides from $CONFIG_FILE"
+          else
+            CONFIG="$DEFAULTS"
+            echo "[OK] No per-repo overrides found — using defaults only"
+          fi
+
+          # Auto-compute homepage if empty
+          HOMEPAGE=$(echo "$CONFIG" | jq -r '.repository.homepage // empty')
+          if [ -z "$HOMEPAGE" ]; then
+            HOMEPAGE="https://robinmordasiewicz.github.io/${REPO}/"
+            CONFIG=$(echo "$CONFIG" | jq --arg hp "$HOMEPAGE" '.repository.homepage = $hp')
+            echo "[INFO] Auto-computed homepage: $HOMEPAGE"
+          fi
+
+          echo "[OK] Config validated for ${OWNER}/${REPO}"
+
+          # ─── Phase 2: Apply repo settings ────────────────────────────────────
+          echo ""
+          echo "=== Phase 2: Apply repo settings ==="
+
+          DESIRED_REPO=$(echo "$CONFIG" | jq -c '.repository')
+          CURRENT_REPO=$(gh api "repos/${OWNER}/${REPO}" 2>/dev/null)
+
+          REPO_DRIFT=false
+          REPO_PATCH="{}"
+
+          for key in $(echo "$DESIRED_REPO" | jq -r 'keys[]'); do
+            desired_val=$(echo "$DESIRED_REPO" | jq -c ".[\"$key\"]")
+            current_val=$(echo "$CURRENT_REPO" | jq -c ".[\"$key\"]")
+            if [ "$desired_val" != "$current_val" ]; then
+              echo "[WARN] Drift in repo.$key: current=$current_val desired=$desired_val"
+              REPO_PATCH=$(echo "$REPO_PATCH" | jq --argjson v "$desired_val" ". + {\"$key\": \$v}")
+              REPO_DRIFT=true
+            fi
+          done
+
+          if [ "$REPO_DRIFT" = true ]; then
+            echo "[INFO] Patching repository settings..."
+            echo "$REPO_PATCH" | gh api "repos/${OWNER}/${REPO}" --method PATCH --input - >/dev/null
+            echo "[OK] Repository settings updated"
+          else
+            echo "[OK] Repository settings match — no changes needed"
+          fi
+
+          # ─── Phase 3: Apply Actions permissions ──────────────────────────────
+          echo ""
+          echo "=== Phase 3: Apply Actions permissions ==="
+
+          DESIRED_ACTIONS=$(echo "$CONFIG" | jq -c '.actions_permissions // empty')
+
+          if [ -n "$DESIRED_ACTIONS" ]; then
+            CURRENT_ACTIONS=$(gh api "repos/${OWNER}/${REPO}/actions/permissions/workflow" 2>/dev/null)
+            ACTIONS_DRIFT=false
+
+            for key in $(echo "$DESIRED_ACTIONS" | jq -r 'keys[]'); do
+              desired_val=$(echo "$DESIRED_ACTIONS" | jq -c ".[\"$key\"]")
+              current_val=$(echo "$CURRENT_ACTIONS" | jq -c ".[\"$key\"]")
+              if [ "$desired_val" != "$current_val" ]; then
+                echo "[WARN] Drift in actions.$key: current=$current_val desired=$desired_val"
+                ACTIONS_DRIFT=true
+              fi
+            done
+
+            if [ "$ACTIONS_DRIFT" = true ]; then
+              echo "[INFO] Updating Actions workflow permissions..."
+              echo "$DESIRED_ACTIONS" | gh api "repos/${OWNER}/${REPO}/actions/permissions/workflow" \
+                --method PUT --input - >/dev/null
+              echo "[OK] Actions permissions updated"
+            else
+              echo "[OK] Actions permissions match — no changes needed"
+            fi
+          else
+            echo "[SKIP] No actions_permissions in config"
+          fi
+
+          # ─── Phase 4: Apply branch protection ────────────────────────────────
+          echo ""
+          echo "=== Phase 4: Apply branch protection ==="
+
+          BRANCH_COUNT=$(echo "$CONFIG" | jq '.branch_protection | length')
+
+          for i in $(seq 0 $((BRANCH_COUNT - 1))); do
+            BRANCH=$(echo "$CONFIG" | jq -r ".branch_protection[$i].branch")
+            echo "--- Branch: $BRANCH ---"
+
+            DESIRED_PAYLOAD=$(echo "$CONFIG" | jq -c ".branch_protection[$i] | del(.branch)")
+
+            HTTP_CODE=$(gh api "repos/${OWNER}/${REPO}/branches/${BRANCH}/protection" \
+              --include 2>/dev/null | head -1 | awk '{print $2}') || true
+            CURRENT_PROTECTION=$(gh api "repos/${OWNER}/${REPO}/branches/${BRANCH}/protection" 2>/dev/null) || true
+
+            PROTECTION_DRIFT=false
+
+            if [ "$HTTP_CODE" = "404" ] || [ -z "$CURRENT_PROTECTION" ]; then
+              echo "[WARN] No branch protection found — will create"
+              PROTECTION_DRIFT=true
+            else
+              desired_enforce=$(echo "$DESIRED_PAYLOAD" | jq '.enforce_admins')
+              current_enforce=$(echo "$CURRENT_PROTECTION" | jq '.enforce_admins.enabled')
+              if [ "$desired_enforce" != "$current_enforce" ]; then
+                echo "[WARN] Drift in enforce_admins: current=$current_enforce desired=$desired_enforce"
+                PROTECTION_DRIFT=true
+              fi
+
+              desired_checks=$(echo "$DESIRED_PAYLOAD" | jq -c '.required_status_checks')
+              if [ "$desired_checks" = "null" ]; then
+                current_checks=$(echo "$CURRENT_PROTECTION" | jq -c '.required_status_checks')
+                if [ "$current_checks" != "null" ]; then
+                  echo "[WARN] Drift in required_status_checks"
+                  PROTECTION_DRIFT=true
+                fi
+              fi
+
+              desired_reviews=$(echo "$DESIRED_PAYLOAD" | jq -c '.required_pull_request_reviews')
+              if [ "$desired_reviews" != "null" ]; then
+                for review_key in required_approving_review_count dismiss_stale_reviews require_code_owner_reviews require_last_push_approval; do
+                  desired_val=$(echo "$desired_reviews" | jq ".$review_key")
+                  current_val=$(echo "$CURRENT_PROTECTION" | jq ".required_pull_request_reviews.$review_key // false")
+                  if [ "$desired_val" != "$current_val" ]; then
+                    echo "[WARN] Drift in $review_key: current=$current_val desired=$desired_val"
+                    PROTECTION_DRIFT=true
+                  fi
+                done
+              fi
+
+              desired_restrictions=$(echo "$DESIRED_PAYLOAD" | jq -c '.restrictions')
+              if [ "$desired_restrictions" = "null" ]; then
+                current_restrictions=$(echo "$CURRENT_PROTECTION" | jq -c '.restrictions')
+                if [ "$current_restrictions" != "null" ]; then
+                  echo "[WARN] Drift in restrictions"
+                  PROTECTION_DRIFT=true
+                fi
+              fi
+
+              for flag in required_linear_history allow_force_pushes allow_deletions block_creations required_conversation_resolution lock_branch allow_fork_syncing; do
+                desired_flag=$(echo "$DESIRED_PAYLOAD" | jq ".$flag")
+                current_flag=$(echo "$CURRENT_PROTECTION" | jq ".$flag.enabled // false")
+                if [ "$desired_flag" != "$current_flag" ]; then
+                  echo "[WARN] Drift in $flag: current=$current_flag desired=$desired_flag"
+                  PROTECTION_DRIFT=true
+                fi
+              done
+            fi
+
+            if [ "$PROTECTION_DRIFT" = true ]; then
+              echo "[INFO] Applying branch protection for $BRANCH..."
+
+              PUT_PAYLOAD=$(jq -n \
+                --argjson desired "$DESIRED_PAYLOAD" \
+                '{
+                  enforce_admins: $desired.enforce_admins,
+                  required_status_checks: $desired.required_status_checks,
+                  required_pull_request_reviews: (
+                    if $desired.required_pull_request_reviews == null then null
+                    else {
+                      required_approving_review_count: $desired.required_pull_request_reviews.required_approving_review_count,
+                      dismiss_stale_reviews: $desired.required_pull_request_reviews.dismiss_stale_reviews,
+                      require_code_owner_reviews: $desired.required_pull_request_reviews.require_code_owner_reviews,
+                      require_last_push_approval: $desired.required_pull_request_reviews.require_last_push_approval
+                    }
+                    end
+                  ),
+                  restrictions: $desired.restrictions,
+                  required_linear_history: $desired.required_linear_history,
+                  allow_force_pushes: $desired.allow_force_pushes,
+                  allow_deletions: $desired.allow_deletions,
+                  block_creations: $desired.block_creations,
+                  required_conversation_resolution: $desired.required_conversation_resolution,
+                  lock_branch: $desired.lock_branch,
+                  allow_fork_syncing: $desired.allow_fork_syncing
+                }')
+
+              echo "$PUT_PAYLOAD" | gh api "repos/${OWNER}/${REPO}/branches/${BRANCH}/protection" \
+                --method PUT --input - >/dev/null
+              echo "[OK] Branch protection updated for $BRANCH"
+            else
+              echo "[OK] Branch protection matches — no changes needed"
+            fi
+          done
+
+          # ─── Phase 5: Apply topics ────────────────────────────────────────────
+          echo ""
+          echo "=== Phase 5: Apply topics ==="
+
+          DESIRED_TOPICS=$(echo "$CONFIG" | jq -c '.topics // []')
+          if [ "$DESIRED_TOPICS" != "[]" ]; then
+            CURRENT_TOPICS=$(gh api "repos/${OWNER}/${REPO}/topics" 2>/dev/null | jq -c '.names // []')
+            if [ "$DESIRED_TOPICS" != "$CURRENT_TOPICS" ]; then
+              echo "[WARN] Drift in topics: current=$CURRENT_TOPICS desired=$DESIRED_TOPICS"
+              echo "[INFO] Updating topics..."
+              jq -n --argjson names "$DESIRED_TOPICS" '{"names": $names}' | \
+                gh api "repos/${OWNER}/${REPO}/topics" --method PUT --input - >/dev/null
+              echo "[OK] Topics updated"
+            else
+              echo "[OK] Topics match — no changes needed"
+            fi
+          else
+            echo "[SKIP] No topics specified"
+          fi
+
+          # ─── Phase 6: Apply Pages ─────────────────────────────────────────────
+          echo ""
+          echo "=== Phase 6: Apply Pages ==="
+
+          PAGES_ENABLED=$(echo "$CONFIG" | jq -r '.pages.enabled // false')
+          if [ "$PAGES_ENABLED" = "true" ]; then
+            PAGES_STATUS=$(gh api "repos/${OWNER}/${REPO}/pages" 2>/dev/null | jq -r '.status // empty') || true
+            if [ -z "$PAGES_STATUS" ]; then
+              echo "[INFO] Enabling GitHub Pages with workflow source..."
+              jq -n '{"build_type": "workflow", "source": {"branch": "main", "path": "/"}}' | \
+                gh api "repos/${OWNER}/${REPO}/pages" --method POST --input - >/dev/null 2>&1 || true
+              echo "[OK] Pages enabled (or already configured)"
+            else
+              echo "[OK] Pages already enabled (status: $PAGES_STATUS)"
+            fi
+          else
+            echo "[SKIP] Pages not enabled in config"
+          fi
+
+          # ─── Phase 7: Verify ──────────────────────────────────────────────────
+          echo ""
+          echo "=== Phase 7: Verify ==="
+
+          VERIFY_FAILED=false
+
+          VERIFY_REPO=$(gh api "repos/${OWNER}/${REPO}" 2>/dev/null)
+          for key in $(echo "$DESIRED_REPO" | jq -r 'keys[]'); do
+            desired_val=$(echo "$DESIRED_REPO" | jq -c ".[\"$key\"]")
+            actual_val=$(echo "$VERIFY_REPO" | jq -c ".[\"$key\"]")
+            if [ "$desired_val" != "$actual_val" ]; then
+              echo "[FAIL] repo.$key: expected=$desired_val actual=$actual_val"
+              VERIFY_FAILED=true
+            fi
+          done
+
+          if [ -n "$DESIRED_ACTIONS" ]; then
+            VERIFY_ACTIONS=$(gh api "repos/${OWNER}/${REPO}/actions/permissions/workflow" 2>/dev/null)
+            for key in $(echo "$DESIRED_ACTIONS" | jq -r 'keys[]'); do
+              desired_val=$(echo "$DESIRED_ACTIONS" | jq -c ".[\"$key\"]")
+              actual_val=$(echo "$VERIFY_ACTIONS" | jq -c ".[\"$key\"]")
+              if [ "$desired_val" != "$actual_val" ]; then
+                echo "[FAIL] actions.$key: expected=$desired_val actual=$actual_val"
+                VERIFY_FAILED=true
+              fi
+            done
+          fi
+
+          for i in $(seq 0 $((BRANCH_COUNT - 1))); do
+            BRANCH=$(echo "$CONFIG" | jq -r ".branch_protection[$i].branch")
+            DESIRED_PAYLOAD=$(echo "$CONFIG" | jq -c ".branch_protection[$i] | del(.branch)")
+            VERIFY_PROTECTION=$(gh api "repos/${OWNER}/${REPO}/branches/${BRANCH}/protection" 2>/dev/null) || true
+
+            if [ -z "$VERIFY_PROTECTION" ]; then
+              echo "[FAIL] Branch protection for $BRANCH not found after apply"
+              VERIFY_FAILED=true
+              continue
+            fi
+
+            desired_enforce=$(echo "$DESIRED_PAYLOAD" | jq '.enforce_admins')
+            actual_enforce=$(echo "$VERIFY_PROTECTION" | jq '.enforce_admins.enabled')
+            if [ "$desired_enforce" != "$actual_enforce" ]; then
+              echo "[FAIL] $BRANCH enforce_admins: expected=$desired_enforce actual=$actual_enforce"
+              VERIFY_FAILED=true
+            fi
+
+            desired_reviews=$(echo "$DESIRED_PAYLOAD" | jq -c '.required_pull_request_reviews')
+            if [ "$desired_reviews" != "null" ]; then
+              desired_approvals=$(echo "$desired_reviews" | jq '.required_approving_review_count')
+              actual_approvals=$(echo "$VERIFY_PROTECTION" | jq '.required_pull_request_reviews.required_approving_review_count // empty')
+              if [ "$desired_approvals" != "$actual_approvals" ]; then
+                echo "[FAIL] $BRANCH required_approving_review_count: expected=$desired_approvals actual=$actual_approvals"
+                VERIFY_FAILED=true
+              fi
+            fi
+
+            for flag in required_linear_history allow_force_pushes allow_deletions block_creations required_conversation_resolution lock_branch allow_fork_syncing; do
+              desired_flag=$(echo "$DESIRED_PAYLOAD" | jq ".$flag")
+              actual_flag=$(echo "$VERIFY_PROTECTION" | jq ".$flag.enabled // false")
+              if [ "$desired_flag" != "$actual_flag" ]; then
+                echo "[FAIL] $BRANCH $flag: expected=$desired_flag actual=$actual_flag"
+                VERIFY_FAILED=true
+              fi
+            done
+          done
+
+          if [ "$VERIFY_FAILED" = true ]; then
+            echo ""
+            echo "[ERROR] Verification failed — settings do not match desired state"
+            exit 1
+          fi
+
+          echo "[OK] All settings verified successfully"
