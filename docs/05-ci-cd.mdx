@@ -1,0 +1,130 @@
+---
+title: CI/CD and Governance
+description: GitHub Actions workflows, template sync, secrets, and branch protection.
+---
+
+The repository uses four GitHub Actions workflows and a centralized template system for governance.
+
+## Workflows
+
+| Workflow | File | Trigger | Purpose |
+|----------|------|---------|---------|
+| GitHub Pages Deploy | `github-pages-deploy.yml` | Push to `main`, manual dispatch | Builds and deploys the documentation site to GitHub Pages |
+| Build and Publish Docker Image | `build-image.yml` | Push to `main` (non-`.md`), daily cron, `repository_dispatch` | Builds the Docker image and pushes to GHCR |
+| Require Linked Issue | `require-linked-issue.yml` | Pull request events | Blocks PRs that do not reference a GitHub issue |
+| Enforce Repository Settings | `enforce-repo-settings.yml` | Every 6 hours, push to settings config, manual dispatch | Applies standardized repo settings from the template |
+
+### GitHub Pages Deploy
+
+```yaml
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+```
+
+Delegates to a reusable workflow in the template repository:
+
+```yaml
+jobs:
+  docs:
+    uses: robinmordasiewicz/f5xc-template/.github/workflows/docs-build-deploy.yml@main
+```
+
+Permissions: `contents: read`, `pages: write`, `id-token: write`. Uses concurrency group `pages` with `cancel-in-progress: true` to avoid stale deployments.
+
+### Build and Publish Docker Image
+
+```yaml
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  schedule:
+    - cron: '0 6 * * *'
+  repository_dispatch:
+    types: [rebuild-image]
+```
+
+Steps:
+1. Checkout code
+2. Log in to `ghcr.io` using `docker/login-action`
+3. Build and push using `docker/build-push-action` with context `.` and file `docker/Dockerfile`
+4. Tags: `ghcr.io/<owner>/<repo>:latest` and `ghcr.io/<owner>/<repo>:<sha>`
+
+The daily cron ensures the image stays current even without code changes (picks up dependency updates). The `repository_dispatch` event allows external systems to trigger a rebuild.
+
+Markdown-only changes (`**.md`) are excluded via `paths-ignore` to avoid unnecessary image rebuilds.
+
+### Require Linked Issue
+
+```yaml
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+```
+
+Uses `nearform-actions/github-action-check-linked-issues@v1` to enforce that every PR references a GitHub issue (e.g., `Closes #42` in the description). Dependabot PRs are excluded via:
+
+```yaml
+exclude-branches: "dependabot/**"
+```
+
+A custom message tells contributors the expected format if the check fails. See [CONTRIBUTING.md](https://github.com/robinmordasiewicz/f5xc-docs-builder/blob/main/CONTRIBUTING.md) for the full contributor workflow.
+
+### Enforce Repository Settings
+
+```yaml
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/config/repo-settings.json'
+  workflow_dispatch:
+```
+
+Delegates to a reusable workflow in the template repository:
+
+```yaml
+jobs:
+  enforce:
+    uses: robinmordasiewicz/f5xc-template/.github/workflows/enforce-repo-settings-reusable.yml@main
+    secrets:
+      repo-admin-token: ${{ secrets.REPO_ADMIN_TOKEN }}
+```
+
+Runs every 6 hours and on changes to the settings config file. Applies branch protection rules, merge settings, and other repository configuration from `.github/config/repo-settings.json`.
+
+## Governance Model
+
+### Centralized Template
+
+The `robinmordasiewicz/f5xc-template` repository is the single source of truth for:
+
+- Reusable workflow definitions (docs deploy, repo settings enforcement)
+- Managed files synced across all repos in the organization
+- Standard configurations and branch protection rules
+
+This builder and all content repos inherit their CI/CD behavior from the template.
+
+### Managed File Sync
+
+The template repository can push managed files (like workflow definitions and config files) to downstream repos. This keeps all repositories aligned without manual updates. The sync runs via a separate workflow in the template repo.
+
+### Branch Protection
+
+The enforce-repo-settings workflow applies branch protection rules from the template, including:
+
+- Required status checks before merge
+- Required linked issue check
+- Squash merge preferred
+- Auto-delete head branches after merge
+
+## Secrets
+
+| Secret | Source | Purpose |
+|--------|--------|---------|
+| `GITHUB_TOKEN` | Automatic (GitHub) | Used by most workflows for checkout, package publishing, and API calls |
+| `REPO_ADMIN_TOKEN` | Manual (repository secret) | Required by enforce-repo-settings to modify branch protection and repo settings (needs admin scope) |
