@@ -9,42 +9,6 @@ hero:
       link: ./01-architecture/
       icon: right-arrow
       variant: primary
-    - text: View on GitHub
-      link: https://github.com/robinmordasiewicz/f5xc-docs-builder
-      icon: external
-      variant: minimal
 sidebar:
   hidden: true
 ---
-
-import { Card, CardGrid } from '@astrojs/starlight/components';
-
-## Developer Guides
-
-<CardGrid>
-  <Card title="Architecture" icon="setting">
-    Content injection model, theme system, directory layout, and build pipeline.
-    [Read more &rarr;](./01-architecture/)
-  </Card>
-  <Card title="Placeholder System" icon="pencil">
-    Token format, state management, DOM walker, and how to add new placeholders.
-    [Read more &rarr;](./02-placeholder-system/)
-  </Card>
-  <Card title="Mermaid Diagrams" icon="document">
-    Remark plugin, client-side CDN rendering, and placeholder substitution in diagrams.
-    [Read more &rarr;](./03-mermaid/)
-  </Card>
-  <Card title="Docker Build" icon="rocket">
-    Dockerfile layers, entrypoint orchestration, environment variables, and local usage.
-    [Read more &rarr;](./04-docker/)
-  </Card>
-  <Card title="CI/CD and Governance" icon="approve-check-circle">
-    GitHub Actions workflows, template sync, secrets, and branch protection.
-    [Read more &rarr;](./05-ci-cd/)
-  </Card>
-</CardGrid>
-
-## Other Resources
-
-- [Content Author Migration Guide](https://github.com/robinmordasiewicz/f5xc-docs-builder/blob/main/MIGRATION.md) — frontmatter, imports, preview, and content structure
-- [Contributing Guide](https://github.com/robinmordasiewicz/f5xc-docs-builder/blob/main/CONTRIBUTING.md) — issue → branch → PR workflow and governance rules
