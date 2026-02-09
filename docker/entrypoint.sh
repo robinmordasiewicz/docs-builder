@@ -34,6 +34,13 @@ if [ -z "$DOCS_DESCRIPTION" ] && [ -f /app/src/content/docs/index.mdx ]; then
   export DOCS_DESCRIPTION
 fi
 
+# Read optional LLM links from llms-links.json (if present in content)
+if [ -z "$LLMS_OPTIONAL_LINKS" ] && [ -f /app/src/content/docs/llms-links.json ]; then
+  LLMS_OPTIONAL_LINKS=$(cat /app/src/content/docs/llms-links.json)
+  export LLMS_OPTIONAL_LINKS
+  rm /app/src/content/docs/llms-links.json
+fi
+
 # Extract base path from repo name (if not set via env)
 if [ -z "$DOCS_BASE" ] && [ -n "$GITHUB_REPOSITORY" ]; then
   DOCS_BASE="/${GITHUB_REPOSITORY#*/}"
