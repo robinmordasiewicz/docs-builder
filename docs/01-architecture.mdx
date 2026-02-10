@@ -1,11 +1,13 @@
 ---
 title: Architecture
-description: System design, directory layout, theme system, and build pipeline for the f5xc docs builder.
+description: System design, directory layout, theme system, and build pipeline for the docs builder.
+sidebar:
+  order: 5
 ---
 
 ## Overview
 
-The f5xc docs builder is a containerized [Astro](https://astro.build/) + [Starlight](https://starlight.astro.build/) system. Content repos provide Markdown/MDX files; the builder supplies the framework, theme, and build logic. The two halves meet at build time inside a Docker container.
+The docs builder is a containerized [Astro](https://astro.build/) + [Starlight](https://starlight.astro.build/) system. Content repos provide Markdown/MDX files; the builder supplies the framework, theme, and build logic. The two halves meet at build time inside a Docker container.
 
 ## Content Injection Model
 
